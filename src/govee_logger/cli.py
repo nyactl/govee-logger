@@ -19,8 +19,6 @@ from .scanner import collect
 
 log = logging.getLogger("govee_logger")
 
-CONNECT_ATTEMPTS = 3
-
 
 async def _scan(cfg, seconds: float | None, addresses: set[str] | None = None):
     expected = addresses or set(cfg.aliases) or None
@@ -59,23 +57,20 @@ async def _download_all(cfg, args) -> int:
     conn = store.connect(cfg.db_path)
     store.record_samples(conn, list(samples.values()))
     failed = 0
-    for s in samples.values():
+    for s in sorted(samples.values(), key=lambda s: s.rssi, reverse=True):
         label = cfg.aliases.get(s.address, s.name)
         if not supports_history(s.name):
             log.info("%s: model has no supported history download, skipping", label)
             continue
         since = None if args.full else store.last_download(conn, s.address)
-        for attempt in range(1, CONNECT_ATTEMPTS + 1):
-            try:
-                dl = await download(s.device, since)
-                break
-            except (BleakError, TimeoutError, RuntimeError) as e:
-                log.warning("%s: attempt %d/%d failed: %s", label, attempt, CONNECT_ATTEMPTS, e or type(e).__name__)
+        have = set() if args.full else store.minutes_since(conn, s.address, since)
+        dl = await download(s.address, since, have)
+        store.record_download(conn, s.address, dl)
+        if dl.complete:
+            log.info("%s: %d records", label, len(dl.records))
         else:
             failed += 1
-            continue
-        store.record_download(conn, s.address, dl)
-        log.info("%s: %d records%s", label, len(dl.records), "" if dl.complete else " (incomplete, will retry next run)")
+            log.error("%s: incomplete, %d records saved; the rest is fetched next run", label, len(dl.records))
     conn.close()
     return 1 if failed else 0
 
@@ -190,6 +185,8 @@ def main() -> None:
 
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    # bluetoothctl is deliberately not in the image; bleak's fallback assumption is correct for any current BlueZ.
+    logging.getLogger("bleak.backends.bluezdbus.version").setLevel(logging.ERROR)
     cfg = load(args.config)
     if args.db:
         cfg.db_path = args.db

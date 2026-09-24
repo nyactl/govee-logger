@@ -58,14 +58,21 @@ def record_download(conn: sqlite3.Connection, address: str, dl: Download) -> Non
             "INSERT OR IGNORE INTO readings VALUES (?, ?, ?, ?)",
             [(address, _ts(r.timestamp), r.temperature, r.humidity) for r in dl.records],
         )
-        # Only advance the watermark on a complete transfer, so an interrupted one is retried next run.
-        if dl.complete:
+        # An interrupted transfer advances only as far as it got without gaps; the rest is fetched next time.
+        if dl.until is not None:
             conn.execute("UPDATE devices SET last_download = ? WHERE address = ?", (_ts(dl.until), address))
 
 
 def last_download(conn: sqlite3.Connection, address: str) -> datetime | None:
     row = conn.execute("SELECT last_download FROM devices WHERE address = ?", (address,)).fetchone()
     return datetime.fromisoformat(row[0]) if row and row[0] else None
+
+
+def minutes_since(conn: sqlite3.Connection, address: str, since: datetime | None) -> set[datetime]:
+    rows = conn.execute(
+        "SELECT ts FROM readings WHERE address = ? AND ts > ?", (address, _ts(since) if since else "")
+    ).fetchall()
+    return {datetime.fromisoformat(r[0]) for r in rows}
 
 
 def latest(conn: sqlite3.Connection) -> list[sqlite3.Row]:

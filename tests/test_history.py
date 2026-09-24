@@ -1,6 +1,14 @@
 from datetime import datetime, timedelta, timezone
 
-from govee_logger.history import MAX_MINUTES, build_request, minutes_to_fetch, parse_packet, supports_history
+from govee_logger.history import (
+    MAX_MINUTES,
+    build_request,
+    _missing_span,
+    _watermark,
+    minutes_to_fetch,
+    parse_packet,
+    supports_history,
+)
 
 
 def test_build_request():
@@ -27,3 +35,16 @@ def test_minutes_to_fetch():
 def test_supports_history():
     assert supports_history("GVH5075_ABCD")
     assert not supports_history("Govee_H5179_ABCD")
+
+
+
+def test_missing_span_and_watermark():
+    t0 = datetime(2026, 9, 24, 8, 0, tzinfo=timezone.utc)
+    wanted = [t0 + timedelta(minutes=i) for i in range(10)]
+    assert _missing_span(wanted, set()) == (wanted[0], wanted[9])
+    assert _watermark(wanted, set()) is None
+    covered = set(wanted[:4]) | set(wanted[6:8])
+    assert _missing_span(wanted, covered) == (wanted[4], wanted[9])
+    assert _watermark(wanted, covered) == wanted[3]
+    assert _missing_span(wanted, set(wanted)) is None
+    assert _watermark(wanted, set(wanted)) == wanted[9]

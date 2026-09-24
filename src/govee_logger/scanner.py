@@ -1,9 +1,8 @@
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from bleak import BleakScanner
-from bleak.backends.device import BLEDevice
 from bleak.exc import BleakError
 
 from .decode import Reading, decode
@@ -16,7 +15,6 @@ class Sample:
     name: str
     rssi: int
     reading: Reading
-    device: BLEDevice = field(compare=False, repr=False)
 
 
 async def collect(duration: float, adapter: str | None = None, expected: set[str] | None = None) -> dict[str, Sample]:
@@ -36,7 +34,7 @@ async def collect(duration: float, adapter: str | None = None, expected: set[str
         reading = decode(name, adv.manufacturer_data)
         if reading is None:
             return
-        samples[address] = Sample(datetime.now(timezone.utc), address, name, adv.rssi, reading, device)
+        samples[address] = Sample(datetime.now(timezone.utc), address, name, adv.rssi, reading)
         if expected and expected <= samples.keys():
             done.set()
 

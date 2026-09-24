@@ -1,10 +1,11 @@
 import asyncio
+import contextlib
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from bleak import BleakClient
-from bleak.backends.device import BLEDevice
+from bleak.exc import BleakError
 
 from .crypto import PRE_SHARED_KEY, decrypt, encrypt, frame
 from .decode import unpack_packed
@@ -40,7 +41,8 @@ class HistoryRecord:
 class Download:
     records: list[HistoryRecord]
     complete: bool
-    until: datetime
+    # Newest minute up to which nothing is missing; None if not even the oldest minute arrived.
+    until: datetime | None
 
 
 def supports_history(name: str) -> bool:
@@ -85,54 +87,120 @@ async def _handshake(client: BleakClient) -> bytes | None:
     return rx1[2:18]
 
 
-async def download(device: BLEDevice | str, since: datetime | None, idle_timeout: float = 15) -> Download:
-    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
-    start, end = minutes_to_fetch(now, since), 1
-    by_offset: dict[int, tuple[float, float]] = {}
+def _missing_span(wanted: list[datetime], covered: set[datetime]) -> tuple[datetime, datetime] | None:
+    missing = [m for m in wanted if m not in covered]
+    return (missing[0], missing[-1]) if missing else None
+
+
+def _watermark(wanted: list[datetime], covered: set[datetime]) -> datetime | None:
+    """Newest minute up to which every wanted minute has arrived."""
+    newest = None
+    for minute in wanted:
+        if minute not in covered:
+            break
+        newest = minute
+    return newest
+
+
+def _minute_now() -> datetime:
+    return datetime.now(timezone.utc).replace(second=0, microsecond=0)
+
+
+async def _transfer(
+    client: BleakClient,
+    key: bytes | None,
+    span: tuple[datetime, datetime],
+    covered: set[datetime],
+    readings: dict[datetime, tuple[float, float]],
+    idle_timeout: float,
+) -> bool:
+    """Request one span; returns False if the device went quiet before finishing."""
+    now = _minute_now()
+    start = max(1, int((now - span[0]).total_seconds() // 60))
+    end = max(1, int((now - span[1]).total_seconds() // 60))
     packets = 0
-    reported_packets: int | None = None
+    finished = False
     keep_alive_due = False
     activity = asyncio.Event()
-    key: bytes | None = None
 
     def on_data(_, data: bytearray):
         nonlocal packets, keep_alive_due
         data = decrypt(key, bytes(data))
         packets += 1
+        # A packet covers 6 minutes even where they hold no reading (before the device had data).
+        header = int.from_bytes(data[0:2], "big")
+        for offset in range(max(header - 5, end), header + 1):
+            covered.add(now - timedelta(minutes=offset))
         for offset, temperature, humidity in parse_packet(data):
-            by_offset[offset] = (temperature, humidity)
+            readings[now - timedelta(minutes=offset)] = (temperature, humidity)
         if packets % (KEEP_ALIVE_EVERY // 6) == 0:
             keep_alive_due = True
         activity.set()
 
     def on_command(_, data: bytearray):
-        nonlocal reported_packets
-        data = decrypt(key, bytes(data))
-        if data[:2] == TRANSFER_DONE:
-            reported_packets = int.from_bytes(data[2:4], "big")
+        nonlocal finished
+        if decrypt(key, bytes(data))[:2] == TRANSFER_DONE:
+            finished = True
             activity.set()
 
-    log.info("requesting %d minutes of history", start)
-    async with BleakClient(device, timeout=30) as client:
-        key = await _handshake(client)
-        await client.start_notify(DATA_UUID, on_data)
-        await client.start_notify(COMMAND_UUID, on_command)
+    log.info("requesting %d minutes of history", start - end + 1)
+    await client.start_notify(DATA_UUID, on_data)
+    await client.start_notify(COMMAND_UUID, on_command)
+    try:
         await client.write_gatt_char(COMMAND_UUID, encrypt(key, build_request(start, end)), response=True)
-        while reported_packets is None:
+        while not finished:
             activity.clear()
             try:
                 await asyncio.wait_for(activity.wait(), idle_timeout)
             except TimeoutError:
                 log.warning("transfer stalled after %d packets", packets)
-                break
+                return False
             if keep_alive_due:
                 keep_alive_due = False
                 await client.write_gatt_char(COMMAND_UUID, encrypt(key, frame(KEEP_ALIVE)), response=True)
+        return True
+    finally:
+        # The link may already be gone; the caller handles that from the original error.
+        with contextlib.suppress(BleakError):
+            await client.stop_notify(DATA_UUID)
+            await client.stop_notify(COMMAND_UUID)
 
-    complete = reported_packets is not None and reported_packets == packets
-    if reported_packets is not None and not complete:
-        log.warning("device reported %d packets, received %d", reported_packets, packets)
-    records = [
-        HistoryRecord(now - timedelta(minutes=offset), t, h) for offset, (t, h) in sorted(by_offset.items(), reverse=True)
-    ]
-    return Download(records, complete, now - timedelta(minutes=end))
+
+async def download(
+    address: str,
+    since: datetime | None,
+    have: set[datetime] = frozenset(),
+    connections: int = 3,
+    passes: int = 20,
+    idle_timeout: float = 15,
+) -> Download:
+    """Fetch every minute after `since` not already in `have`, re-requesting whatever a weak link dropped.
+
+    Connects by address rather than a scanned BLEDevice: BlueZ drops unconnected devices
+    from its cache ~30s after discovery stops, and bleak rescans for an address.
+    """
+    now = _minute_now()
+    wanted = [now - timedelta(minutes=m) for m in range(minutes_to_fetch(now, since), 0, -1)]
+    covered: set[datetime] = set(have)
+    readings: dict[datetime, tuple[float, float]] = {}
+    remaining_passes = passes
+
+    for attempt in range(1, connections + 1):
+        if _missing_span(wanted, covered) is None or remaining_passes == 0:
+            break
+        try:
+            async with BleakClient(address, timeout=30) as client:
+                key = await _handshake(client)
+                while remaining_passes and (span := _missing_span(wanted, covered)):
+                    remaining_passes -= 1
+                    before = len(covered)
+                    if not await _transfer(client, key, span, covered, readings, idle_timeout) and len(covered) == before:
+                        break
+        except (BleakError, TimeoutError, RuntimeError) as e:
+            log.warning("connection %d/%d failed: %s", attempt, connections, str(e) or type(e).__name__)
+
+    complete = _missing_span(wanted, covered) is None
+    if not complete:
+        log.warning("%d of %d minutes still missing", sum(m not in covered for m in wanted), len(wanted))
+    records = [HistoryRecord(ts, t, h) for ts, (t, h) in sorted(readings.items())]
+    return Download(records, complete, _watermark(wanted, covered))
