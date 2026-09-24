@@ -54,7 +54,16 @@ One SQLite file, written only by the logger. Readers (e.g. Grafana) can open it 
 `.github/workflows/container.yml`. It runs as uid 1000 and needs no network and no capabilities:
 it reaches Bluetooth through the host's BlueZ over the system D-Bus socket.
 
-Host requirements: a Bluetooth adapter and `bluez` installed with `bluetooth.service` running.
+Host requirements:
+
+- a Bluetooth adapter and `bluez` installed, with `bluetooth.service` running
+- on AppArmor hosts (Ubuntu, Debian): the profile in `contrib/apparmor/govee-logger`. Docker's
+  default profile blocks all D-Bus traffic; this one is the same profile plus sending to `org.bluez` only.
+
+      sudo install -m 0644 contrib/apparmor/govee-logger /etc/apparmor.d/govee-logger
+      sudo apparmor_parser -r -W /etc/apparmor.d/govee-logger
+
+  Files in `/etc/apparmor.d` are loaded again at boot.
 
 ```yaml
 services:
@@ -67,7 +76,7 @@ services:
     network_mode: none
     read_only: true
     cap_drop: [ALL]
-    security_opt: [no-new-privileges]
+    security_opt: [no-new-privileges, apparmor=govee-logger]
     restart: unless-stopped
 ```
 

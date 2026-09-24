@@ -69,6 +69,24 @@ jobs:
           echo "$out" | grep -q ' ERROR cannot reach BlueZ'
           ! echo "$out" | grep -q Traceback
 
+      # The runner has AppArmor and a system D-Bus but no Bluetooth, so a scan fails either
+      # way. Under docker-default it fails on AppArmor; under our profile it must get past
+      # AppArmor to D-Bus and fail on BlueZ instead.
+      - name: AppArmor profile
+        run: |
+          sudo apparmor_parser -r -W contrib/apparmor/govee-logger
+          scan() {
+            docker run --rm --read-only --network none --cap-drop ALL "$@" \
+              -v /run/dbus/system_bus_socket:/run/dbus/system_bus_socket govee-logger:ci scan --seconds 1 2>&1 || true
+          }
+          default=$(scan)
+          echo "docker-default: $default"
+          echo "$default" | grep -q AppArmor
+          profiled=$(scan --security-opt apparmor=govee-logger)
+          echo "govee-logger: $profiled"
+          echo "$profiled" | grep -q ' ERROR '
+          ! echo "$profiled" | grep -q AppArmor
+
       - name: Log in to the registry
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v4

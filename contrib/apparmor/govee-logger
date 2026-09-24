@@ -1,0 +1,56 @@
+# AppArmor profile for the govee-logger container.
+#
+# Docker's default profile (github.com/moby/profiles, docker-default) plus D-Bus
+# access to the host's BlueZ. docker-default has no dbus rules, which AppArmor
+# treats as deny-all, so the container cannot reach bluetoothd under it.
+#
+# Install:  sudo install -m 0644 govee-logger /etc/apparmor.d/govee-logger
+#           sudo apparmor_parser -r -W /etc/apparmor.d/govee-logger
+# Use:      security_opt: ["apparmor=govee-logger"]
+
+abi <abi/3.0>,
+
+#include <tunables/global>
+
+profile govee-logger flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  network,
+  deny network alg,
+  deny network vsock,
+  capability,
+  file,
+  umount,
+  signal (receive) peer=unconfined,
+  signal (receive) peer=runc,
+  signal (receive) peer=crun,
+  signal (send,receive) peer=govee-logger,
+
+  # The bus daemon itself: Hello, AddMatch/RemoveMatch for signal subscriptions.
+  # Owning a name would additionally need a dbus bind rule, which is not granted.
+  dbus (send) bus=system path=/org/freedesktop/DBus interface=org.freedesktop.DBus peer=(name=org.freedesktop.DBus),
+  # Method calls to BlueZ only; nothing else on the system bus.
+  dbus (send) bus=system peer=(name=org.bluez),
+  # Replies and signals come from bluetoothd and the bus daemon, both unconfined on the host.
+  dbus (receive) bus=system peer=(label=unconfined),
+
+  deny @{PROC}/* w,
+  deny @{PROC}/{[^1-9/],[^1-9/][^0-9/],[^1-9s/][^0-9y/][^0-9s/],[^1-9/][^0-9/][^0-9/][^0-9/]*}/** w,
+  deny @{PROC}/sys/[^k]** w,
+  deny @{PROC}/sys/kernel/{?,??,[^s][^h][^m]**} w,
+  deny @{PROC}/sysrq-trigger rwklx,
+  deny @{PROC}/kcore rwklx,
+
+  deny mount,
+
+  deny /sys/[^f]*/** wklx,
+  deny /sys/f[^s]*/** wklx,
+  deny /sys/fs/[^c]*/** wklx,
+  deny /sys/fs/c[^g]*/** wklx,
+  deny /sys/fs/cg[^r]*/** wklx,
+  deny /sys/firmware/** rwklx,
+  deny /sys/devices/virtual/powercap/** rwklx,
+  deny /sys/kernel/security/** rwklx,
+
+  ptrace (trace,tracedby,read,readby) peer=govee-logger,
+}
