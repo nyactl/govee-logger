@@ -90,7 +90,7 @@ jobs:
           provenance: mode=max
           sbom: true
 
-      - uses: sigstore/cosign-installer@v4
+      - uses: sigstore/cosign-installer@v4.1.2
         if: github.event_name != 'pull_request'
 
       # Keyless: the signing identity is this workflow, so a deployment can
