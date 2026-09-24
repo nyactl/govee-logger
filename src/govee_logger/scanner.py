@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 
 from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
+from bleak.exc import BleakError
 
 from .decode import Reading, decode
 
@@ -40,9 +41,18 @@ async def collect(duration: float, adapter: str | None = None, expected: set[str
             done.set()
 
     kwargs = {"adapter": adapter} if adapter else {}
-    async with BleakScanner(on_advertisement, **kwargs):
-        try:
-            await asyncio.wait_for(done.wait(), timeout=duration)
-        except TimeoutError:
-            pass
+    scanner = BleakScanner(on_advertisement, **kwargs)
+    try:
+        await scanner.start()
+    except (FileNotFoundError, ConnectionRefusedError) as e:
+        raise BleakError(
+            f"cannot reach BlueZ on the system D-Bus ({e.strerror}); "
+            "is bluetooth.service running and /run/dbus/system_bus_socket mounted?"
+        ) from e
+    try:
+        await asyncio.wait_for(done.wait(), timeout=duration)
+    except TimeoutError:
+        pass
+    finally:
+        await scanner.stop()
     return samples
