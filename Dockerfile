@@ -5,7 +5,7 @@ FROM python:3.14-slim-trixie@sha256:caaf356f40667c496d405780745b9ac25771c189a51d
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1
 RUN python -m venv /opt/venv
 WORKDIR /src
-COPY pyproject.toml ./
+COPY pyproject.toml README.md LICENSE ./
 COPY src/ src/
 RUN /opt/venv/bin/pip install --only-binary=:all: .
 

@@ -6,5 +6,6 @@ dist
 tests
 *.db
 *.md
+!README.md
 **/__pycache__
 **/*.egg-info

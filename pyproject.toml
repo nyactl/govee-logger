@@ -7,6 +7,8 @@ name = "govee-logger"
 version = "0.1.0"
 description = "Log Govee BLE thermometer/hygrometer readings to SQLite"
 requires-python = ">=3.11"
+license = "MIT"
+readme = "README.md"
 dependencies = ["bleak>=0.22", "cryptography>=42"]
 
 [project.optional-dependencies]
