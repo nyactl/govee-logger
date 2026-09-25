@@ -41,7 +41,7 @@ def cmd_scan(cfg, args) -> int:
         return 1
     if not args.dry_run:
         with store.connect(cfg.db_path) as conn:
-            store.record_samples(conn, list(samples.values()))
+            store.record_samples(conn, list(samples.values()), cfg.aliases)
     return 0
 
 
@@ -55,7 +55,7 @@ async def _download_all(cfg, args) -> int:
         return 1
 
     conn = store.connect(cfg.db_path)
-    store.record_samples(conn, list(samples.values()))
+    store.record_samples(conn, list(samples.values()), cfg.aliases)
     failed = 0
     for s in sorted(samples.values(), key=lambda s: s.rssi, reverse=True):
         label = cfg.aliases.get(s.address, s.name)
@@ -127,9 +127,8 @@ def cmd_latest(cfg, args) -> int:
     with store.connect(cfg.db_path) as conn:
         rows = store.latest(conn)
     for r in rows:
-        label = cfg.aliases.get(r["address"], r["name"])
         print(
-            f"{r['ts']}  {label:<20} {r['temperature']:6.1f}°C {r['humidity']:5.1f}%  "
+            f"{r['ts']}  {r['label']:<20} {r['temperature']:6.1f}°C {r['humidity']:5.1f}%  "
             f"bat {r['battery']}%  downloaded {r['last_download'] or 'never'}"
         )
     return 0
@@ -141,8 +140,7 @@ def cmd_export(cfg, args) -> int:
     writer = csv.writer(sys.stdout)
     writer.writerow(["ts", "address", "label", "temperature", "humidity"])
     for r in rows:
-        label = cfg.aliases.get(r["address"], r["name"])
-        writer.writerow([r["ts"], r["address"], label, r["temperature"], r["humidity"]])
+        writer.writerow([r["ts"], r["address"], r["label"], r["temperature"], r["humidity"]])
     return 0
 
 

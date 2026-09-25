@@ -14,6 +14,9 @@ Newer firmware (e.g. H5075 1.04.x) encrypts this exchange; the handshake is hand
 | Current reading | H5072, H5074, H5075, H5100, H5101, H5102, H5104, H5174, H5177, H5179 |
 | History download | H5075 (tested), H5072, H5100, H5101, H5102, H5104, H5174, H5177 |
 
+Only the H5075 has been tested on real hardware. The other models use the same formats and commands
+according to the projects credited below; reports for them are welcome.
+
 ## Commands
 
     govee-logger run --every 24h        # download now, then every 24h until stopped (container default)
@@ -46,7 +49,7 @@ One SQLite file, written only by the logger. Readers (e.g. Grafana) can open it 
 | Table | Columns | |
 |---|---|---|
 | `readings` | `address`, `ts`, `temperature`, `humidity` | one row per device per minute; primary key `(address, ts)`; `ts` is UTC ISO 8601 at minute precision |
-| `devices` | `address`, `name`, `battery`, `rssi`, `last_seen`, `last_download` | one row per device; `last_download` is the watermark for the next incremental download |
+| `devices` | `address`, `name`, `label`, `battery`, `rssi`, `last_seen`, `last_download` | one row per device; `name` is what the device advertises, `label` its alias from the config (updated whenever the device is seen), `last_download` the watermark for the next incremental download |
 
 ## Container
 
@@ -101,3 +104,18 @@ Runs on macOS too, where devices show up as CoreBluetooth UUIDs instead of MAC a
 
 Bump `version` in `pyproject.toml`, commit, then tag `v<version>` and push the tag. CI refuses a
 tag that does not match `pyproject.toml`.
+
+## Credits
+
+The Bluetooth formats and the history protocol, including the encrypted handshake on newer
+firmware, were documented by these projects. This is an independent implementation.
+
+- [GoveeBTTempLogger](https://github.com/wcbonner/GoveeBTTempLogger) (MIT)
+- [govee-h5075-thermo-hygrometer](https://github.com/Heckie75/govee-h5075-thermo-hygrometer) (MIT)
+- [govee-ble](https://github.com/Bluetooth-Devices/govee-ble) (Apache-2.0)
+
+Not affiliated with or endorsed by Govee.
+
+## License
+
+MIT, see [LICENSE](LICENSE).

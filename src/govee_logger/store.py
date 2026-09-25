@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS readings (
 CREATE TABLE IF NOT EXISTS devices (
     address       TEXT PRIMARY KEY,
     name          TEXT NOT NULL,
+    label         TEXT,
     battery       INTEGER,
     rssi          INTEGER,
     last_seen     TEXT,
@@ -36,15 +37,20 @@ def connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def record_samples(conn: sqlite3.Connection, samples: list[Sample]) -> None:
+def record_samples(conn: sqlite3.Connection, samples: list[Sample], aliases: dict[str, str]) -> None:
     with conn:
         conn.executemany(
             """
-            INSERT INTO devices (address, name, battery, rssi, last_seen) VALUES (?, ?, ?, ?, ?)
+            INSERT INTO devices (address, name, label, battery, rssi, last_seen) VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT (address) DO UPDATE SET
-                name = excluded.name, battery = excluded.battery, rssi = excluded.rssi, last_seen = excluded.last_seen
+                name = excluded.name, label = excluded.label, battery = excluded.battery,
+                rssi = excluded.rssi, last_seen = excluded.last_seen
             """,
-            [(s.address, s.name, s.reading.battery, s.rssi, s.timestamp.isoformat(timespec="seconds")) for s in samples],
+            [
+                (s.address, s.name, aliases.get(s.address), s.reading.battery, s.rssi,
+                 s.timestamp.isoformat(timespec="seconds"))
+                for s in samples
+            ],
         )
         conn.executemany(
             "INSERT OR IGNORE INTO readings VALUES (?, ?, ?, ?)",
@@ -78,7 +84,7 @@ def minutes_since(conn: sqlite3.Connection, address: str, since: datetime | None
 def latest(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute(
         """
-        SELECT d.address, d.name, d.battery, d.last_download, r.ts, r.temperature, r.humidity
+        SELECT d.address, COALESCE(d.label, d.name) AS label, d.battery, d.last_download, r.ts, r.temperature, r.humidity
         FROM devices d
         JOIN readings r ON r.address = d.address
         WHERE r.ts = (SELECT MAX(ts) FROM readings WHERE address = d.address)
@@ -90,7 +96,7 @@ def latest(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 def history(conn: sqlite3.Connection, since: str | None) -> list[sqlite3.Row]:
     return conn.execute(
         """
-        SELECT r.ts, r.address, d.name, r.temperature, r.humidity
+        SELECT r.ts, r.address, COALESCE(d.label, d.name) AS label, r.temperature, r.humidity
         FROM readings r LEFT JOIN devices d ON d.address = r.address
         WHERE r.ts >= ? ORDER BY r.ts, r.address
         """,
