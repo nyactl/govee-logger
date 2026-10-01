@@ -56,7 +56,8 @@ async def _download_all(cfg, args) -> int:
 
     conn = store.connect(cfg.db_path)
     store.record_samples(conn, list(samples.values()), cfg.aliases)
-    failed = 0
+    # A configured device that was not seen counts as failed, so `run` retries it soon.
+    failed = len((addresses or set(cfg.aliases)) - samples.keys())
     for s in sorted(samples.values(), key=lambda s: s.rssi, reverse=True):
         label = cfg.aliases.get(s.address, s.name)
         if not supports_history(s.name):
@@ -70,7 +71,7 @@ async def _download_all(cfg, args) -> int:
             log.info("%s: %d records", label, len(dl.records))
         else:
             failed += 1
-            log.error("%s: incomplete, %d records saved; the rest is fetched next run", label, len(dl.records))
+            log.error("%s: incomplete, %d records saved; the rest is fetched on the next run", label, len(dl.records))
     conn.close()
     return 1 if failed else 0
 
@@ -92,6 +93,13 @@ def interval_seconds(value: str) -> int:
     return int(value[:-1]) * INTERVAL_UNITS[value[-1]]
 
 
+def next_run(succeeded: bool, every: str, retry: str) -> str:
+    """After a failed or incomplete run, come back after `retry`, but never later than `every`."""
+    if succeeded or interval_seconds(retry) >= interval_seconds(every):
+        return every
+    return retry
+
+
 async def _run_forever(cfg, args) -> int:
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -100,7 +108,7 @@ async def _run_forever(cfg, args) -> int:
     stopping = asyncio.create_task(stop.wait())
 
     while True:
-        # An interrupted transfer is safe: the download watermark only advances on completion.
+        # An interrupted transfer is safe: the next run re-requests whatever is missing.
         downloading = asyncio.create_task(_download_all(cfg, args))
         await asyncio.wait({downloading, stopping}, return_when=asyncio.FIRST_COMPLETED)
         if stop.is_set():
@@ -109,12 +117,14 @@ async def _run_forever(cfg, args) -> int:
                 await downloading
             return 0
         try:
-            downloading.result()
+            succeeded = downloading.result() == 0
         except Exception:
-            log.exception("download failed, retrying next run")
+            log.exception("download failed")
+            succeeded = False
 
-        log.info("next run in %s", args.every)
-        await asyncio.wait({stopping}, timeout=interval_seconds(args.every))
+        delay = next_run(succeeded, args.every, args.retry)
+        log.info("next run in %s%s", delay, "" if succeeded else " (retrying what failed)")
+        await asyncio.wait({stopping}, timeout=interval_seconds(delay))
         if stop.is_set():
             return 0
 
@@ -170,6 +180,10 @@ def main() -> None:
 
     p = sub.add_parser("run", help="download now, then again at a fixed interval until stopped")
     p.add_argument("--every", type=interval, default="24h", help="interval, e.g. 6h or 1d (default 24h)")
+    p.add_argument(
+        "--retry", type=interval, default="1h",
+        help="interval after a run with a missing or incomplete device (default 1h)",
+    )
     p.add_argument("--seconds", type=float, help="scan duration used to find devices")
     p.add_argument("--address", action="append", default=[], help="only this device (repeatable)")
     p.set_defaults(func=cmd_run, full=False)
