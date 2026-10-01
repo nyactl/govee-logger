@@ -120,6 +120,7 @@ async def _transfer(
     end = max(1, int((now - span[1]).total_seconds() // 60))
     packets = 0
     finished = False
+    sent: int | None = None
     keep_alive_due = False
     activity = asyncio.Event()
 
@@ -138,8 +139,10 @@ async def _transfer(
         activity.set()
 
     def on_command(_, data: bytearray):
-        nonlocal finished
-        if decrypt(key, bytes(data))[:2] == TRANSFER_DONE:
+        nonlocal finished, sent
+        data = decrypt(key, bytes(data))
+        if data[:2] == TRANSFER_DONE:
+            sent = int.from_bytes(data[2:4], "big")
             finished = True
             activity.set()
 
@@ -158,6 +161,13 @@ async def _transfer(
             if keep_alive_due:
                 keep_alive_due = False
                 await client.write_gatt_char(COMMAND_UUID, encrypt(key, frame(KEEP_ALIVE)), response=True)
+        if sent == packets:
+            # Nothing was lost, so minutes still uncovered do not exist on the device
+            # (e.g. the oldest one already rotated out of its 20-day buffer).
+            minute = span[0]
+            while minute <= span[1]:
+                covered.add(minute)
+                minute += timedelta(minutes=1)
         return True
     finally:
         # The link may already be gone; the caller handles that from the original error.
