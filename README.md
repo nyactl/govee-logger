@@ -19,7 +19,8 @@ according to the projects credited below; reports for them are welcome.
 
 ## Commands
 
-    govee-logger run --every 24h        # download now, then every 24h until stopped (container default)
+    govee-logger run --every 24h        # download now, then every 24h until stopped (container default);
+                                        # after a missing or incomplete device, retry after --retry (1h)
     govee-logger download               # one download pass
     govee-logger download --full        # re-fetch all 20 days
     govee-logger download --address MAC # one device only
@@ -104,6 +105,15 @@ Runs on macOS too, where devices show up as CoreBluetooth UUIDs instead of MAC a
 
 Bump `version` in `pyproject.toml`, commit, then tag `v<version>` and push the tag. CI refuses a
 tag that does not match `pyproject.toml`.
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| a device is missing from `scan`, or logged as `not seen` | a phone app (e.g. Govee Home) is connected to it; while connected it stops broadcasting | close the app completely, including in the background; the device reappears within seconds and the next download catches up |
+| `cannot reach BlueZ on the system D-Bus` | `bluetooth.service` not running, or the socket not mounted into the container | start `bluetooth.service`; mount `/run/dbus/system_bus_socket` |
+| `AccessDenied ... An AppArmor policy prevents this sender` | Docker's default AppArmor profile blocks D-Bus | use `contrib/apparmor/govee-logger`, see Container |
+| a download keeps ending `incomplete` | weak signal: the device drops part of the transfer | nothing is lost while the gap is under 20 days; each run re-requests only the missing minutes. Moving the device or the adapter closer speeds it up |
 
 ## Credits
 
