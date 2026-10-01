@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # All dependencies ship manylinux wheels for amd64 and arm64, so no compiler is needed.
-FROM python:3.14-slim-trixie@sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2 AS build
+FROM python:3.14-slim-trixie@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343719cb97305b3d AS build
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1
 RUN python -m venv /opt/venv
 WORKDIR /src
@@ -9,7 +9,7 @@ COPY pyproject.toml README.md LICENSE ./
 COPY src/ src/
 RUN /opt/venv/bin/pip install --only-binary=:all: .
 
-FROM python:3.14-slim-trixie@sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc42430d531ea09f8a2
+FROM python:3.14-slim-trixie@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343719cb97305b3d
 RUN groupadd -g 1000 govee \
  && useradd -u 1000 -g govee -M -s /usr/sbin/nologin govee \
  && install -d -o govee -g govee /data
