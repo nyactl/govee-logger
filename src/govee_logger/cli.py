@@ -20,18 +20,36 @@ from .scanner import collect
 log = logging.getLogger("govee_logger")
 
 
-async def _scan(cfg, seconds: float | None, addresses: set[str] | None = None):
+async def _scan(cfg, seconds: float | None, addresses: set[str] | None = None, quiet: bool = False):
     expected = addresses or set(cfg.aliases) or None
     samples = await collect(seconds or cfg.scan_seconds, cfg.adapter, expected)
+    missing = (expected or set()) - samples.keys()
+    if quiet:
+        log.info(
+            "scan: %d device(s)%s", len(samples),
+            f", not seen: {', '.join(cfg.aliases.get(a, a) for a in sorted(missing))}" if missing else "",
+        )
+        return samples
     for s in samples.values():
         log.info(
             "%s (%s): %.1f°C %.1f%% battery %d%% rssi %d",
             cfg.aliases.get(s.address, s.name), s.address,
             s.reading.temperature, s.reading.humidity, s.reading.battery, s.rssi,
         )
-    if missing := (expected or set()) - samples.keys():
+    if missing:
         log.warning("not seen: %s", ", ".join(cfg.aliases.get(a, a) for a in sorted(missing)))
     return samples
+
+
+async def _record_scan(cfg, args) -> None:
+    """Store the current broadcast readings: fresh values without connecting to the devices."""
+    addresses = {a.upper() for a in args.address} or None
+    samples = await _scan(cfg, args.seconds, addresses, quiet=True)
+    if addresses:
+        samples = {a: s for a, s in samples.items() if a in addresses}
+    if samples:
+        with contextlib.closing(store.connect(cfg.db_path)) as conn:
+            store.record_samples(conn, list(samples.values()), cfg.aliases)
 
 
 def cmd_scan(cfg, args) -> int:
@@ -107,24 +125,48 @@ async def _run_forever(cfg, args) -> int:
         loop.add_signal_handler(sig, stop.set)
     stopping = asyncio.create_task(stop.wait())
 
-    while True:
-        # An interrupted transfer is safe: the next run re-requests whatever is missing.
-        downloading = asyncio.create_task(_download_all(cfg, args))
-        await asyncio.wait({downloading, stopping}, return_when=asyncio.FIRST_COMPLETED)
+    async def until_stopped(task: asyncio.Task) -> bool:
+        """Wait for one task; False if a stop request interrupted it."""
+        await asyncio.wait({task, stopping}, return_when=asyncio.FIRST_COMPLETED)
         if stop.is_set():
-            downloading.cancel()
+            task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await downloading
-            return 0
-        try:
-            succeeded = downloading.result() == 0
-        except Exception:
-            log.exception("download failed")
-            succeeded = False
+                await task
+            return False
+        return True
 
-        delay = next_run(succeeded, args.every, args.retry)
-        log.info("next run in %s%s", delay, "" if succeeded else " (retrying what failed)")
-        await asyncio.wait({stopping}, timeout=interval_seconds(delay))
+    scan_every = interval_seconds(args.scan_every) if args.scan_every else None
+    next_download = loop.time()
+    next_scan = None
+    while True:
+        now = loop.time()
+        if now >= next_download:
+            # Downloads and scans never overlap: both need the Bluetooth adapter.
+            # An interrupted transfer is safe: the next run re-requests whatever is missing.
+            downloading = asyncio.create_task(_download_all(cfg, args))
+            if not await until_stopped(downloading):
+                return 0
+            try:
+                succeeded = downloading.result() == 0
+            except Exception:
+                log.exception("download failed")
+                succeeded = False
+            delay = next_run(succeeded, args.every, args.retry)
+            log.info("next download in %s%s", delay, "" if succeeded else " (retrying what failed)")
+            next_download = loop.time() + interval_seconds(delay)
+            next_scan = loop.time() + scan_every if scan_every else None
+        elif next_scan is not None and now >= next_scan:
+            scanning = asyncio.create_task(_record_scan(cfg, args))
+            if not await until_stopped(scanning):
+                return 0
+            try:
+                scanning.result()
+            except Exception:
+                log.exception("scan failed")
+            next_scan = loop.time() + scan_every
+
+        wake = min(t for t in (next_download, next_scan) if t is not None)
+        await asyncio.wait({stopping}, timeout=max(0, wake - loop.time()))
         if stop.is_set():
             return 0
 
@@ -178,11 +220,16 @@ def main() -> None:
     p.add_argument("--full", action="store_true", help="fetch everything stored (~20 days), not just what is new")
     p.set_defaults(func=cmd_download)
 
-    p = sub.add_parser("run", help="download now, then again at a fixed interval until stopped")
+    p = sub.add_parser("run", help="download now and then at an interval, optionally scanning in between, until stopped")
     p.add_argument("--every", type=interval, default="24h", help="interval, e.g. 6h or 1d (default 24h)")
     p.add_argument(
         "--retry", type=interval, default="1h",
         help="interval after a run with a missing or incomplete device (default 1h)",
+    )
+    p.add_argument(
+        "--scan-every", type=interval,
+        help="also record the devices' broadcast readings at this interval, e.g. 10m; "
+        "fresh values without connecting (default: off)",
     )
     p.add_argument("--seconds", type=float, help="scan duration used to find devices")
     p.add_argument("--address", action="append", default=[], help="only this device (repeatable)")

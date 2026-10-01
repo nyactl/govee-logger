@@ -8,6 +8,8 @@ daily run is enough and nothing is lost while the logger is down for less than 2
 Newer firmware (e.g. H5075 1.04.x) encrypts this exchange; the handshake is handled automatically.
 
 `govee-logger scan` records just the current reading from each device's broadcast, without connecting.
+`run --scan-every 10m` combines both: fresh values every few minutes from the broadcasts, which costs the
+devices nothing, and the complete per-minute history from one connection a day.
 
 | | Models |
 |---|---|
@@ -21,6 +23,7 @@ according to the projects credited below; reports for them are welcome.
 
     govee-logger run --every 24h        # download now, then every 24h until stopped (container default);
                                         # after a missing or incomplete device, retry after --retry (1h)
+    govee-logger run --scan-every 10m   # additionally record the broadcast readings every 10 minutes
     govee-logger download               # one download pass
     govee-logger download --full        # re-fetch all 20 days
     govee-logger download --address MAC # one device only
@@ -49,7 +52,7 @@ One SQLite file, written only by the logger. Readers (e.g. Grafana) can open it 
 
 | Table | Columns | |
 |---|---|---|
-| `readings` | `address`, `ts`, `temperature`, `humidity` | one row per device per minute; primary key `(address, ts)`; `ts` is UTC ISO 8601 at minute precision |
+| `readings` | `address`, `ts`, `temperature`, `humidity` | one row per device per minute, from the history download or a broadcast scan, whichever came first; primary key `(address, ts)`; `ts` is UTC ISO 8601 at minute precision |
 | `devices` | `address`, `name`, `label`, `battery`, `rssi`, `last_seen`, `last_download` | one row per device; `name` is what the device advertises, `label` its alias from the config (updated whenever the device is seen), `last_download` the watermark for the next incremental download |
 
 ## Container
